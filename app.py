@@ -7,8 +7,7 @@ from utils.tratamento import carregar_dados
 st.set_page_config(
     page_title="Dashboard Financeiro",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
 
@@ -26,16 +25,27 @@ def formatar_valor(valor):
     return texto.replace(".", ",")
 
 
-df = carregar_dados()
+@st.cache_data(ttl=60, show_spinner="Carregando dados...")
+def carregar_base():
+    return carregar_dados()
+
+
+df = carregar_base()
 
 if "Filial" not in df.columns:
     df["Filial"] = "Matriz"
 
 # =====================================================
-# FILTROS
+# SIDEBAR
 # =====================================================
 
 st.sidebar.header("🔎 Filtros")
+
+if st.sidebar.button("🔄 Atualizar Dados", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 filiais = sorted(df["Filial"].dropna().unique())
 
@@ -46,10 +56,11 @@ filial_sel = st.sidebar.multiselect(
 )
 
 competencias = (
-    df[["Data Baixa", "Mes_Ano"]]
+    df[["Mes_Ano", "Data Baixa"]]
     .dropna()
-    .drop_duplicates()
-    .sort_values("Data Baixa")["Mes_Ano"]
+    .assign(Data_Ordenacao=lambda x: pd.to_datetime(x["Mes_Ano"], format="%m/%Y"))
+    .drop_duplicates("Mes_Ano")
+    .sort_values("Data_Ordenacao")["Mes_Ano"]
     .unique()
 )
 
@@ -75,7 +86,7 @@ fornecedor_sel = st.sidebar.multiselect(
 )
 
 # =====================================================
-# APLICAR FILTROS
+# FILTROS
 # =====================================================
 
 df_filtrado = df.copy()
@@ -86,10 +97,6 @@ df_filtrado = df_filtrado[df_filtrado["Categoria"].isin(categoria_sel)]
 
 if fornecedor_sel:
     df_filtrado = df_filtrado[df_filtrado["Nome"].isin(fornecedor_sel)]
-
-# =====================================================
-# SIDEBAR - RESUMO
-# =====================================================
 
 st.sidebar.markdown("---")
 
@@ -109,7 +116,7 @@ st.sidebar.metric(
 )
 
 # =====================================================
-# TÍTULO E ABAS
+# TÍTULO
 # =====================================================
 
 st.title("📊 Dashboard Financeiro de Despesas")
@@ -336,10 +343,6 @@ with tab4:
 
     evolucao_mes = evolucao_mes.sort_values("Data_Ordenacao")
 
-    # -----------------------------
-    # Gráfico 1 - Valor pago
-    # -----------------------------
-
     fig_evolucao_valor = px.bar(
         evolucao_mes,
         x="Mes_Ano",
@@ -359,14 +362,7 @@ with tab4:
         height=500
     )
 
-    st.plotly_chart(
-        fig_evolucao_valor,
-        use_container_width=True
-    )
-
-    # -----------------------------
-    # Gráfico 2 - Lançamentos
-    # -----------------------------
+    st.plotly_chart(fig_evolucao_valor, use_container_width=True)
 
     fig_evolucao_qtd = px.line(
         evolucao_mes,
@@ -382,16 +378,9 @@ with tab4:
         height=500
     )
 
-    st.plotly_chart(
-        fig_evolucao_qtd,
-        use_container_width=True
-    )
+    st.plotly_chart(fig_evolucao_qtd, use_container_width=True)
 
     st.divider()
-
-    # -----------------------------
-    # Comparativo anual
-    # -----------------------------
 
     st.subheader("📊 Comparativo Anual")
 
@@ -421,25 +410,13 @@ with tab4:
         height=450
     )
 
-    st.plotly_chart(
-        fig_comparativo_ano,
-        use_container_width=True
-    )
-
-    # -----------------------------
-    # Tabela
-    # -----------------------------
+    st.plotly_chart(fig_comparativo_ano, use_container_width=True)
 
     tabela_evolucao = evolucao_mes.copy()
-
     tabela_evolucao["Valor Pago"] = tabela_evolucao["Valor_Pago"].apply(formatar_valor)
 
     tabela_evolucao = tabela_evolucao[
-        [
-            "Mes_Ano",
-            "Valor Pago",
-            "Lancamentos"
-        ]
+        ["Mes_Ano", "Valor Pago", "Lancamentos"]
     ]
 
     tabela_evolucao = tabela_evolucao.rename(
@@ -482,10 +459,6 @@ with tab5:
         12: "Dez"
     }
 
-    # -----------------------------
-    # Base mensal por ano
-    # -----------------------------
-
     base_mensal = (
         df_forecast
         .groupby(
@@ -507,281 +480,212 @@ with tab5:
         columns={"Pago": "Pago_2026"}
     )
 
-    comparativo_final = pd.merge(
-        comp_2025,
-        comp_2026,
-        on="Mes_Pagamento",
-        how="inner"
-    )
-
-    comparativo_final["Variacao_%"] = (
-        (
-            comparativo_final["Pago_2026"]
-            /
-            comparativo_final["Pago_2025"]
-        ) - 1
-    ) * 100
-
-    crescimento_medio = comparativo_final["Variacao_%"].mean()
-
-    if pd.isna(crescimento_medio):
-        crescimento_medio = 0
-
-    # -----------------------------
-    # Realizado 2026
-    # -----------------------------
-
-    realizado_2026 = comp_2026.copy()
-
-    if realizado_2026.empty:
+    if comp_2026.empty:
         st.warning("Não há dados de 2026 para calcular o forecast.")
-        st.stop()
-
-    meses_realizados = sorted(realizado_2026["Mes_Pagamento"].unique())
-
-    ultimo_mes_realizado = max(meses_realizados)
-
-    total_realizado_2026 = realizado_2026["Pago_2026"].sum()
-
-    media_mensal_2026 = realizado_2026["Pago_2026"].mean()
-
-    # -----------------------------
-    # Forecast baseado em 2025 + crescimento médio
-    # -----------------------------
-
-    meses_restantes = list(range(ultimo_mes_realizado + 1, 13))
-
-    forecast_lista = []
-
-    for mes in meses_restantes:
-
-        valor_2025_mes = comp_2025.loc[
-            comp_2025["Mes_Pagamento"] == mes,
-            "Pago_2025"
-        ]
-
-        if not valor_2025_mes.empty:
-            valor_base = valor_2025_mes.iloc[0]
-        else:
-            valor_base = media_mensal_2026
-
-        valor_forecast = valor_base * (1 + crescimento_medio / 100)
-
-        forecast_lista.append({
-            "Mes_Pagamento": mes,
-            "Valor": valor_forecast,
-            "Tipo": "Forecast"
-        })
-
-    forecast_df = pd.DataFrame(forecast_lista)
-
-    total_forecast = (
-        forecast_df["Valor"].sum()
-        if not forecast_df.empty
-        else 0
-    )
-
-    total_previsto_2026 = total_realizado_2026 + total_forecast
-
-    total_pago_2025 = comp_2025["Pago_2025"].sum()
-
-    variacao_prevista_ano = (
-        (
-            total_previsto_2026 / total_pago_2025
-        ) - 1
-    ) * 100 if total_pago_2025 > 0 else 0
-
-    # -----------------------------
-    # KPIs
-    # -----------------------------
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    col1.metric(
-        "💰 Pago em 2025",
-        formatar_valor(total_pago_2025)
-    )
-
-    col2.metric(
-        "✅ Realizado 2026",
-        formatar_valor(total_realizado_2026)
-    )
-
-    col3.metric(
-        "🔮 Forecast Jun-Dez",
-        formatar_valor(total_forecast)
-    )
-
-    col4.metric(
-        "📅 Previsto 2026",
-        formatar_valor(total_previsto_2026)
-    )
-
-    col5.metric(
-        "📈 Aumento Médio",
-        f"{crescimento_medio:.1f}%".replace(".", ",")
-    )
-
-    st.metric(
-        "📊 Variação Prevista 2026 x 2025",
-        f"{variacao_prevista_ano:.1f}%".replace(".", ",")
-    )
-
-    st.divider()
-
-    # -----------------------------
-    # Gráfico comparativo 2025 x 2026
-    # -----------------------------
-
-    st.subheader("📊 Comparativo Mês a Mês - 2025 x 2026")
-
-    grafico_comp = comparativo_final.copy()
-
-    grafico_comp["Mes"] = grafico_comp["Mes_Pagamento"].map(meses_dict)
-
-    grafico_comp = grafico_comp.sort_values("Mes_Pagamento")
-
-    fig_comp = px.bar(
-        grafico_comp,
-        x="Mes",
-        y=["Pago_2025", "Pago_2026"],
-        barmode="group",
-        title="Pagamentos Realizados por Mês"
-    )
-
-    fig_comp.update_layout(
-        xaxis_title="Mês",
-        yaxis_title="Valor Pago (R$)",
-        height=500,
-        legend_title_text="Ano"
-    )
-
-    st.plotly_chart(
-        fig_comp,
-        use_container_width=True
-    )
-
-    st.divider()
-
-    # -----------------------------
-    # Gráfico Forecast 2026
-    # -----------------------------
-
-    st.subheader("🔮 Realizado x Forecast - 2026")
-
-    realizado_grafico = realizado_2026.rename(
-        columns={"Pago_2026": "Valor"}
-    )
-
-    realizado_grafico["Tipo"] = "Realizado"
-
-    if forecast_df.empty:
-        grafico_forecast = realizado_grafico[
-            ["Mes_Pagamento", "Valor", "Tipo"]
-        ]
     else:
-        grafico_forecast = pd.concat(
-            [
-                realizado_grafico[
-                    ["Mes_Pagamento", "Valor", "Tipo"]
-                ],
-                forecast_df[
-                    ["Mes_Pagamento", "Valor", "Tipo"]
-                ]
-            ],
-            ignore_index=True
+
+        comparativo_final = pd.merge(
+            comp_2025,
+            comp_2026,
+            on="Mes_Pagamento",
+            how="inner"
         )
 
-    grafico_forecast["Mes"] = grafico_forecast["Mes_Pagamento"].map(meses_dict)
+        comparativo_final["Variacao_%"] = (
+            (
+                comparativo_final["Pago_2026"]
+                /
+                comparativo_final["Pago_2025"]
+            ) - 1
+        ) * 100
 
-    grafico_forecast = grafico_forecast.sort_values("Mes_Pagamento")
+        crescimento_medio = comparativo_final["Variacao_%"].mean()
 
-    fig_forecast = px.bar(
-        grafico_forecast,
-        x="Mes",
-        y="Valor",
-        color="Tipo",
-        text="Valor",
-        title="Realizado e Projeção até Dezembro"
-    )
+        if pd.isna(crescimento_medio):
+            crescimento_medio = 0
 
-    fig_forecast.update_traces(
-        texttemplate="%{y:,.0f}",
-        textposition="outside"
-    )
+        realizado_2026 = comp_2026.copy()
 
-    fig_forecast.update_layout(
-        xaxis_title="Mês",
-        yaxis_title="Valor Pago / Projetado (R$)",
-        height=550
-    )
+        meses_realizados = sorted(realizado_2026["Mes_Pagamento"].unique())
+        ultimo_mes_realizado = max(meses_realizados)
 
-    st.plotly_chart(
-        fig_forecast,
-        use_container_width=True
-    )
+        total_realizado_2026 = realizado_2026["Pago_2026"].sum()
+        media_mensal_2026 = realizado_2026["Pago_2026"].mean()
 
-    st.divider()
+        meses_restantes = list(range(ultimo_mes_realizado + 1, 13))
 
-    # -----------------------------
-    # Tabela comparativa
-    # -----------------------------
+        forecast_lista = []
 
-    st.subheader("📋 Tabela Comparativa 2025 x 2026")
+        for mes in meses_restantes:
 
-    tabela_comp = comparativo_final.copy()
+            valor_2025_mes = comp_2025.loc[
+                comp_2025["Mes_Pagamento"] == mes,
+                "Pago_2025"
+            ]
 
-    tabela_comp["Mês"] = tabela_comp["Mes_Pagamento"].map(meses_dict)
+            if not valor_2025_mes.empty:
+                valor_base = valor_2025_mes.iloc[0]
+            else:
+                valor_base = media_mensal_2026
 
-    tabela_comp["2025"] = tabela_comp["Pago_2025"].apply(formatar_valor)
+            valor_forecast = valor_base * (1 + crescimento_medio / 100)
 
-    tabela_comp["2026"] = tabela_comp["Pago_2026"].apply(formatar_valor)
+            forecast_lista.append({
+                "Mes_Pagamento": mes,
+                "Valor": valor_forecast,
+                "Tipo": "Forecast"
+            })
 
-    tabela_comp["Variação %"] = tabela_comp["Variacao_%"].map(
-        lambda x: f"{x:.1f}%".replace(".", ",")
-    )
+        forecast_df = pd.DataFrame(forecast_lista)
 
-    tabela_comp = tabela_comp[
-        [
-            "Mês",
-            "2025",
-            "2026",
-            "Variação %"
+        total_forecast = (
+            forecast_df["Valor"].sum()
+            if not forecast_df.empty
+            else 0
+        )
+
+        total_previsto_2026 = total_realizado_2026 + total_forecast
+        total_pago_2025 = comp_2025["Pago_2025"].sum()
+
+        variacao_prevista_ano = (
+            (
+                total_previsto_2026 / total_pago_2025
+            ) - 1
+        ) * 100 if total_pago_2025 > 0 else 0
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        col1.metric("💰 Pago em 2025", formatar_valor(total_pago_2025))
+        col2.metric("✅ Realizado 2026", formatar_valor(total_realizado_2026))
+        col3.metric("🔮 Forecast Jun-Dez", formatar_valor(total_forecast))
+        col4.metric("📅 Previsto 2026", formatar_valor(total_previsto_2026))
+        col5.metric(
+            "📈 Aumento Médio",
+            f"{crescimento_medio:.1f}%".replace(".", ",")
+        )
+
+        st.metric(
+            "📊 Variação Prevista 2026 x 2025",
+            f"{variacao_prevista_ano:.1f}%".replace(".", ",")
+        )
+
+        st.divider()
+
+        st.subheader("📊 Comparativo Mês a Mês - 2025 x 2026")
+
+        grafico_comp = comparativo_final.copy()
+        grafico_comp["Mes"] = grafico_comp["Mes_Pagamento"].map(meses_dict)
+        grafico_comp = grafico_comp.sort_values("Mes_Pagamento")
+
+        fig_comp = px.bar(
+            grafico_comp,
+            x="Mes",
+            y=["Pago_2025", "Pago_2026"],
+            barmode="group",
+            title="Pagamentos Realizados por Mês"
+        )
+
+        fig_comp.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Valor Pago (R$)",
+            height=500,
+            legend_title_text="Ano"
+        )
+
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("🔮 Realizado x Forecast - 2026")
+
+        realizado_grafico = realizado_2026.rename(
+            columns={"Pago_2026": "Valor"}
+        )
+
+        realizado_grafico["Tipo"] = "Realizado"
+
+        if forecast_df.empty:
+            grafico_forecast = realizado_grafico[
+                ["Mes_Pagamento", "Valor", "Tipo"]
+            ]
+        else:
+            grafico_forecast = pd.concat(
+                [
+                    realizado_grafico[
+                        ["Mes_Pagamento", "Valor", "Tipo"]
+                    ],
+                    forecast_df[
+                        ["Mes_Pagamento", "Valor", "Tipo"]
+                    ]
+                ],
+                ignore_index=True
+            )
+
+        grafico_forecast["Mes"] = grafico_forecast["Mes_Pagamento"].map(meses_dict)
+        grafico_forecast = grafico_forecast.sort_values("Mes_Pagamento")
+
+        fig_forecast = px.bar(
+            grafico_forecast,
+            x="Mes",
+            y="Valor",
+            color="Tipo",
+            text="Valor",
+            title="Realizado e Projeção até Dezembro"
+        )
+
+        fig_forecast.update_traces(
+            texttemplate="%{y:,.0f}",
+            textposition="outside"
+        )
+
+        fig_forecast.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Valor Pago / Projetado (R$)",
+            height=550
+        )
+
+        st.plotly_chart(fig_forecast, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("📋 Tabela Comparativa 2025 x 2026")
+
+        tabela_comp = comparativo_final.copy()
+        tabela_comp["Mês"] = tabela_comp["Mes_Pagamento"].map(meses_dict)
+        tabela_comp["2025"] = tabela_comp["Pago_2025"].apply(formatar_valor)
+        tabela_comp["2026"] = tabela_comp["Pago_2026"].apply(formatar_valor)
+
+        tabela_comp["Variação %"] = tabela_comp["Variacao_%"].map(
+            lambda x: f"{x:.1f}%".replace(".", ",")
+        )
+
+        tabela_comp = tabela_comp[
+            ["Mês", "2025", "2026", "Variação %"]
         ]
-    ]
 
-    st.dataframe(
-        tabela_comp,
-        use_container_width=True,
-        hide_index=True
-    )
+        st.dataframe(
+            tabela_comp,
+            use_container_width=True,
+            hide_index=True
+        )
 
-    # -----------------------------
-    # Tabela Forecast
-    # -----------------------------
+        st.subheader("📋 Tabela Forecast 2026")
 
-    st.subheader("📋 Tabela Forecast 2026")
+        tabela_forecast = grafico_forecast.copy()
+        tabela_forecast["Valor"] = tabela_forecast["Valor"].apply(formatar_valor)
 
-    tabela_forecast = grafico_forecast.copy()
-
-    tabela_forecast["Valor"] = tabela_forecast["Valor"].apply(formatar_valor)
-
-    tabela_forecast = tabela_forecast[
-        [
-            "Mes",
-            "Tipo",
-            "Valor"
+        tabela_forecast = tabela_forecast[
+            ["Mes", "Tipo", "Valor"]
         ]
-    ]
 
-    tabela_forecast = tabela_forecast.rename(
-        columns={
-            "Mes": "Mês"
-        }
-    )
+        tabela_forecast = tabela_forecast.rename(
+            columns={
+                "Mes": "Mês"
+            }
+        )
 
-    st.dataframe(
-        tabela_forecast,
-        use_container_width=True,
-        hide_index=True
-    )
+        st.dataframe(
+            tabela_forecast,
+            use_container_width=True,
+            hide_index=True
+        )
