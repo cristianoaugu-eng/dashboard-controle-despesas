@@ -7,7 +7,8 @@ from utils.tratamento import carregar_dados
 st.set_page_config(
     page_title="Dashboard Financeiro",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 
